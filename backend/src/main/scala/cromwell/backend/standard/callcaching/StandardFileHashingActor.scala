@@ -108,6 +108,8 @@ abstract class StandardFileHashingActor(standardParams: StandardFileHashingActor
 
     ioHashCommandTry match {
       case Success(ioHashCommand) =>
+        // If there is a file hash caching actor then forward the IoHashCommandWithContext to that. If there isn't a
+        // file hash caching actor then this actor should send the IO command itself.
         standardParams.fileHashCachingActor match {
           case Some(cacheActor) => cacheActor ! IoHashCommandWithContext(ioHashCommand, fileHashContext)
           case None => sendIoCommandWithContext(ioHashCommand, fileHashContext)

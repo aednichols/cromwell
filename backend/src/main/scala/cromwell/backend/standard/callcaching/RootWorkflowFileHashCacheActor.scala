@@ -1,13 +1,12 @@
 package cromwell.backend.standard.callcaching
 
 import java.io.IOException
-import java.util.concurrent.TimeoutException
 
 import akka.actor.{Actor, ActorLogging, ActorRef, Props}
 import cats.data.NonEmptyList
 import com.google.common.cache.{CacheBuilder, CacheLoader, LoadingCache}
 import cromwell.backend.standard.callcaching.RootWorkflowFileHashCacheActor.IoHashCommandWithContext
-import cromwell.core.callcaching.{HashingFailedMessage, HashingServiceUnvailable}
+import cromwell.core.actor.RobustClientHelper.RequestTimeout
 import cromwell.core.io._
 
 
@@ -30,19 +29,6 @@ class RootWorkflowFileHashCacheActor private(override val ioActor: ActorRef) ext
     new CacheLoader[String, FileHashValue] {
       override def load(key: String): FileHashValue = FileHashValueNotRequested
     })
-
-  override protected def onTimeout(message: Any, to: ActorRef): Unit = {
-    message match {
-      case (_, ioHashCommand: IoHashCommand) =>
-        val fileAsString = ioHashCommand.file.pathAsString
-        context.parent !
-          HashingFailedMessage(fileAsString, new TimeoutException(s"Hashing request timed out for: $fileAsString"))
-      case other =>
-        // This should never happen... but at least send _something_ before this actor goes silent.
-        log.warning(s"Root workflow file hash caching actor received unexpected timeout message: $other")
-        context.parent ! HashingServiceUnvailable
-    }
-  }
 
   override def receive: Receive = ioReceive orElse cacheOrHashReceive
 
@@ -95,6 +81,25 @@ class RootWorkflowFileHashCacheActor private(override val ioActor: ActorRef) ext
         log.error(s"Programmer error! Not expecting message type ${ioAck.getClass.getSimpleName} with no requesters for the hash: $fileHashContext")
       case _ =>
         log.error(s"Programmer error! Not expecting message type ${ioAck.getClass.getSimpleName} when the hash value has already been received: $fileHashContext")
+    }
+  }
+
+  override protected def onTimeout(message: Any, to: ActorRef): Unit = {
+    message match {
+      case (fileHashContext: FileHashContext, _) =>
+        // Send this message to all requestors.
+        cache.get(fileHashContext.file) match {
+          case FileHashValueRequested(requesters) =>
+            requesters.toList foreach { case FileHashRequester(replyTo, requestContext, ioCommand) => replyTo ! RequestTimeout(Tuple2(requestContext, ioCommand), replyTo) }
+            // Allow for the possibility of trying again on a timeout.
+            cache.put(fileHashContext.file, FileHashValueNotRequested)
+          case FileHashValueNotRequested =>
+            log.error(s"Programmer error! Not expecting a hash request timeout when a hash value has not been requested: ${fileHashContext.file}")
+          case _ =>
+            log.error(s"Programmer error! Not expecting a hash request timeout when a hash value is already in the cache: ${fileHashContext.file}")
+        }
+      case other =>
+        log.error(s"Programmer error! Root workflow file hash caching actor received unexpected timeout message: $other")
     }
   }
 }
