@@ -23,8 +23,6 @@ class RootWorkflowFileHashCacheActor private(override val ioActor: ActorRef) ext
   // Hashing failed.
   case class FileHashFailure(error: String) extends FileHashValue
 
-  protected def ioCommandBuilder: IoCommandBuilder = DefaultIoCommandBuilder
-
   val cache: LoadingCache[String, FileHashValue] = CacheBuilder.newBuilder().build(
     new CacheLoader[String, FileHashValue] {
       override def load(key: String): FileHashValue = FileHashValueNotRequested
